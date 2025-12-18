@@ -15,19 +15,22 @@ set -euo pipefail
 
 # Version: from git tag, or commit short hash, or "dev"
 get_script_version() {
-    local dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local dir
+    dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if command -v git &>/dev/null && [[ -d "$dir/.git" ]]; then
-        local tag=$(git -C "$dir" describe --tags --exact-match 2>/dev/null)
+        local tag
+        tag=$(git -C "$dir" describe --tags --exact-match 2>/dev/null) || true
         if [[ -n "$tag" ]]; then
             echo "$tag"
         else
-            echo "$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo 'dev')"
+            git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo 'dev'
         fi
     else
         echo "dev"
     fi
 }
-readonly VERSION="$(get_script_version)"
+VERSION="$(get_script_version)"
+readonly VERSION
 readonly DEMO_URL="https://media.codeweavers.com/pub/crossover/cxmac/demo/"
 readonly APP_PATHS=("/Applications/CrossOver.app" "$HOME/Applications/CrossOver.app")
 readonly PLIST="$HOME/Library/Preferences/com.codeweavers.CrossOver.plist"
@@ -66,10 +69,13 @@ get_installed_version() {
 }
 
 get_trial_days_left() {
-    local first_run; first_run=$(defaults read com.codeweavers.CrossOver FirstRunDate 2>/dev/null) || echo ""
+    local first_run
+    first_run=$(defaults read com.codeweavers.CrossOver FirstRunDate 2>/dev/null) || first_run=""
     [[ -z "$first_run" ]] && echo "$TRIAL_DAYS" && return
-    local start=$(date -j -f "%Y-%m-%d %H:%M:%S %z" "$first_run" "+%s" 2>/dev/null) || { echo "$TRIAL_DAYS"; return; }
-    local now=$(date +%s)
+    local start
+    start=$(date -j -f "%Y-%m-%d %H:%M:%S %z" "$first_run" "+%s" 2>/dev/null) || { echo "$TRIAL_DAYS"; return; }
+    local now
+    now=$(date +%s)
     local elapsed=$(( (now - start) / 86400 ))
     local left=$(( TRIAL_DAYS - elapsed ))
     (( left < 0 )) && left=0
@@ -173,8 +179,9 @@ download_and_install() {
     
     # Check for existing installer
     local installer=""
+    local f
     for d in "$HOME/Downloads" "$HOME/Desktop" "/tmp"; do
-        local f=$(find "$d" -maxdepth 1 \( -iname "crossover*.zip" -o -iname "crossover*.dmg" \) 2>/dev/null | head -1)
+        f=$(find "$d" -maxdepth 1 \( -iname "crossover*.zip" -o -iname "crossover*.dmg" \) 2>/dev/null | head -1)
         [[ -n "$f" ]] && installer="$f" && break
     done
     
@@ -187,7 +194,8 @@ download_and_install() {
     fi
     
     info "Installing..."
-    local tmp=$(mktemp -d)
+    local tmp
+    tmp=$(mktemp -d)
     
     case "${installer##*.}" in
         zip) unzip -q "$installer" -d "$tmp" ;;
@@ -199,7 +207,8 @@ download_and_install() {
             ;;
     esac
     
-    local app=$(find "$tmp" -name "CrossOver.app" -type d | head -1)
+    local app
+    app=$(find "$tmp" -name "CrossOver.app" -type d | head -1)
     [[ -z "$app" ]] && { rm -rf "$tmp"; error "CrossOver.app not found in installer"; }
     
     rm -rf "/Applications/CrossOver.app" 2>/dev/null || true
@@ -320,7 +329,8 @@ cmd_remove() {
     
     # Check for bottles (installed Windows apps)
     if [[ -d "$BOTTLES" ]]; then
-        local bottle_count=$(find "$BOTTLES" -maxdepth 1 -type d 2>/dev/null | wc -l)
+        local bottle_count
+        bottle_count=$(find "$BOTTLES" -maxdepth 1 -type d 2>/dev/null | wc -l)
         bottle_count=$((bottle_count - 1))
         if (( bottle_count > 0 )); then
             echo ""
