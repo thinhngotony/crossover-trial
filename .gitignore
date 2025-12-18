@@ -1,0 +1,15 @@
+# Deploy config (contains sensitive data)
+.deploy-config
+
+# Build output
+dist/
+
+# Downloads
+downloads/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+

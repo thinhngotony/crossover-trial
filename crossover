@@ -1,0 +1,413 @@
+#!/usr/bin/env bash
+#
+# CrossOver Manager
+# https://github.com/youruser/crossover
+#
+# Install:  bash <(curl -fsSL your-cloudflare-url.com/crossover)
+# Remove:   bash <(curl -fsSL your-cloudflare-url.com/crossover) remove
+#
+
+set -euo pipefail
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+readonly VERSION="1.0.0"
+readonly DEMO_URL="https://media.codeweavers.com/pub/crossover/cxmac/demo/"
+readonly APP_PATHS=("/Applications/CrossOver.app" "$HOME/Applications/CrossOver.app")
+readonly PLIST="$HOME/Library/Preferences/com.codeweavers.CrossOver.plist"
+readonly SUPPORT="$HOME/Library/Application Support/CrossOver"
+readonly TIE="$SUPPORT/tie"
+readonly BOTTLES="$SUPPORT/Bottles"
+readonly AGENT="$HOME/Library/LaunchAgents/com.crossover.manager.plist"
+readonly TRIAL_DAYS=14
+
+# Colors
+R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' B='\033[0;34m' C='\033[0;36m' N='\033[0m' BOLD='\033[1m'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Utilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+log()     { echo -e "${G}✓${N} $1"; }
+warn()    { echo -e "${Y}!${N} $1"; }
+error()   { echo -e "${R}✗${N} $1"; exit 1; }
+info()    { echo -e "${C}→${N} $1"; }
+header()  { echo -e "\n${BOLD}${B}$1${N}\n"; }
+confirm() { read -rp $'\033[1;33m?\033[0m '"$1 [y/N] " a; [[ "$a" =~ ^[Yy]$ ]]; }
+
+find_app() {
+    for p in "${APP_PATHS[@]}"; do [[ -d "$p" ]] && echo "$p" && return 0; done
+    return 1
+}
+
+get_latest() {
+    curl -sfL "${DEMO_URL}?C=M;O=D" 2>/dev/null | grep -oE 'crossover-[0-9]+\.[0-9]+\.[0-9]+\.zip' | head -1
+}
+
+get_installed_version() {
+    local app; app=$(find_app 2>/dev/null) || return 1
+    defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null
+}
+
+get_trial_days_left() {
+    local first_run; first_run=$(defaults read com.codeweavers.CrossOver FirstRunDate 2>/dev/null) || echo ""
+    [[ -z "$first_run" ]] && echo "$TRIAL_DAYS" && return
+    local start=$(date -j -f "%Y-%m-%d %H:%M:%S %z" "$first_run" "+%s" 2>/dev/null) || { echo "$TRIAL_DAYS"; return; }
+    local now=$(date +%s)
+    local elapsed=$(( (now - start) / 86400 ))
+    local left=$(( TRIAL_DAYS - elapsed ))
+    (( left < 0 )) && left=0
+    echo "$left"
+}
+
+kill_app() {
+    pkill -9 -f "CrossOver" 2>/dev/null || true
+    pkill -9 -f "wine" 2>/dev/null || true
+    sleep 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core Functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+reset_trial() {
+    [[ -d "$TIE" ]] && rm -rf "$TIE"
+    defaults write com.codeweavers.CrossOver FirstRunDate -date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null || true
+    defaults write com.codeweavers.CrossOver FirstRunVersion -string "1.0.0" 2>/dev/null || true
+    defaults delete com.codeweavers.CrossOver SULastCheckTime 2>/dev/null || true
+}
+
+apply_crack() {
+    local app; app=$(find_app) || error "CrossOver not found"
+    local macos="$app/Contents/MacOS"
+    
+    # Handle legacy backup name (CrossOver.origin -> CrossOver.bin)
+    [[ -f "$macos/CrossOver.origin" ]] && [[ ! -f "$macos/CrossOver.bin" ]] && \
+        mv "$macos/CrossOver.origin" "$macos/CrossOver.bin"
+    
+    # Backup original binary
+    if [[ ! -f "$macos/CrossOver.bin" ]]; then
+        [[ -f "$macos/CrossOver" ]] && ! file "$macos/CrossOver" | grep -q "script" && \
+            mv "$macos/CrossOver" "$macos/CrossOver.bin"
+    fi
+    
+    # Create launcher wrapper (resets trial on every launch)
+    cat > "$macos/CrossOver" << 'WRAPPER'
+#!/usr/bin/env bash
+D="$(dirname "$0")"
+T="$HOME/Library/Application Support/CrossOver/tie"
+[[ -d "$T" ]] && rm -rf "$T"
+defaults write com.codeweavers.CrossOver FirstRunDate -date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null
+defaults write com.codeweavers.CrossOver FirstRunVersion -string "1.0.0" 2>/dev/null
+exec "$D/CrossOver.bin" "$@"
+WRAPPER
+    chmod +x "$macos/CrossOver"
+}
+
+setup_auto_reset() {
+    local choice
+    echo ""
+    echo -e "${BOLD}Trial Reset Options:${N}"
+    echo "  1) Reset on every launch only (recommended)"
+    echo "  2) Also reset 1 day before trial expires"
+    echo ""
+    read -rp $'\033[1;33m?\033[0m '"Choose [1/2]: " choice
+    
+    # Remove existing agent
+    [[ -f "$AGENT" ]] && { launchctl unload "$AGENT" 2>/dev/null || true; rm -f "$AGENT"; }
+    
+    if [[ "$choice" == "2" ]]; then
+        mkdir -p "$(dirname "$AGENT")"
+        
+        # Calculate date 1 day before trial ends (13 days from now)
+        local reset_day=$(( TRIAL_DAYS - 1 ))
+        
+        cat > "$AGENT" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.crossover.manager</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>T="\$HOME/Library/Application Support/CrossOver/tie";[ -d "\$T" ]&amp;&amp;rm -rf "\$T";defaults write com.codeweavers.CrossOver FirstRunDate -date "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null;defaults write com.codeweavers.CrossOver FirstRunVersion -string "1.0.0" 2>/dev/null</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>$(( reset_day * 86400 ))</integer>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
+EOF
+        launchctl load "$AGENT" 2>/dev/null || true
+        log "Auto-reset scheduled for ${reset_day} days from each reset"
+    else
+        log "Using launch-time reset only"
+    fi
+}
+
+download_and_install() {
+    local latest; latest=$(get_latest) || error "Cannot fetch latest version"
+    local version="${latest%.zip}"; version="${version#crossover-}"
+    
+    info "Latest version: $version"
+    
+    # Check for existing installer
+    local installer=""
+    for d in "$HOME/Downloads" "$HOME/Desktop" "/tmp"; do
+        local f=$(find "$d" -maxdepth 1 \( -iname "crossover*.zip" -o -iname "crossover*.dmg" \) 2>/dev/null | head -1)
+        [[ -n "$f" ]] && installer="$f" && break
+    done
+    
+    if [[ -z "$installer" ]]; then
+        info "Downloading CrossOver $version (~360MB)..."
+        installer="/tmp/$latest"
+        curl -fL --progress-bar -o "$installer" "${DEMO_URL}${latest}" || error "Download failed"
+    else
+        info "Using existing installer: $(basename "$installer")"
+    fi
+    
+    info "Installing..."
+    local tmp=$(mktemp -d)
+    
+    case "${installer##*.}" in
+        zip) unzip -q "$installer" -d "$tmp" ;;
+        dmg)
+            local mp="/Volumes/CO$$"
+            hdiutil attach "$installer" -quiet -nobrowse -mountpoint "$mp"
+            cp -R "$mp"/* "$tmp/" 2>/dev/null || true
+            hdiutil detach "$mp" -quiet 2>/dev/null || true
+            ;;
+    esac
+    
+    local app=$(find "$tmp" -name "CrossOver.app" -type d | head -1)
+    [[ -z "$app" ]] && { rm -rf "$tmp"; error "CrossOver.app not found in installer"; }
+    
+    rm -rf "/Applications/CrossOver.app" 2>/dev/null || true
+    cp -R "$app" "/Applications/"
+    xattr -cr "/Applications/CrossOver.app" 2>/dev/null || true
+    rm -rf "$tmp"
+    
+    # Clean up /tmp installer
+    [[ "$installer" == /tmp/* ]] && rm -f "$installer"
+    
+    log "Installed CrossOver $version"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Commands
+# ─────────────────────────────────────────────────────────────────────────────
+
+cmd_install() {
+    echo ""
+    echo -e "${BOLD}╭──────────────────────────────────────╮${N}"
+    echo -e "${BOLD}│     🍷 CrossOver Manager v$VERSION     │${N}"
+    echo -e "${BOLD}╰──────────────────────────────────────╯${N}"
+    
+    local app; app=$(find_app 2>/dev/null) || app=""
+    
+    if [[ -n "$app" ]]; then
+        # Existing installation
+        local current; current=$(get_installed_version) || current="unknown"
+        local days_left; days_left=$(get_trial_days_left)
+        local latest_zip; latest_zip=$(get_latest)
+        local latest="${latest_zip%.zip}"; latest="${latest#crossover-}"
+        
+        header "Existing Installation Detected"
+        echo -e "  Version:    ${BOLD}$current${N}"
+        echo -e "  Trial left: ${BOLD}$days_left days${N}"
+        echo -e "  Latest:     ${BOLD}$latest${N}"
+        echo ""
+        
+        # Check if crack is applied
+        local cracked=false
+        [[ -f "$app/Contents/MacOS/CrossOver.bin" ]] || [[ -f "$app/Contents/MacOS/CrossOver.origin" ]] && cracked=true
+        
+        if [[ "$cracked" == true ]]; then
+            info "Trial auto-reset is already active"
+        fi
+        
+        # Reset trial
+        kill_app
+        reset_trial
+        log "Trial reset complete (14 days)"
+        
+        # Offer upgrade if newer version available
+        if [[ "$current" != "$latest" ]] && [[ "$latest" != "" ]]; then
+            echo ""
+            if confirm "Upgrade to version $latest?"; then
+                download_and_install
+                apply_crack
+                setup_auto_reset
+            elif [[ "$cracked" != true ]]; then
+                apply_crack
+                setup_auto_reset
+            fi
+        elif [[ "$cracked" != true ]]; then
+            apply_crack
+            setup_auto_reset
+        fi
+    else
+        # Fresh installation
+        header "Fresh Installation"
+        
+        download_and_install
+        kill_app
+        reset_trial
+        apply_crack
+        setup_auto_reset
+        
+        log "Trial reset enabled (14 days, auto-renewing)"
+    fi
+    
+    echo ""
+    echo -e "${G}════════════════════════════════════════${N}"
+    echo -e "${G}  ✓ Done! Open CrossOver to get started ${N}"
+    echo -e "${G}════════════════════════════════════════${N}"
+    echo ""
+}
+
+cmd_remove() {
+    echo ""
+    echo -e "${BOLD}╭──────────────────────────────────────╮${N}"
+    echo -e "${BOLD}│     🍷 CrossOver Removal             │${N}"
+    echo -e "${BOLD}╰──────────────────────────────────────╯${N}"
+    echo ""
+    
+    local app; app=$(find_app 2>/dev/null) || app=""
+    
+    if [[ -z "$app" ]]; then
+        warn "CrossOver is not installed"
+        
+        # Still offer to clean up residual files
+        if [[ -d "$SUPPORT" ]] || [[ -f "$PLIST" ]] || [[ -f "$AGENT" ]]; then
+            if confirm "Clean up residual configuration files?"; then
+                rm -rf "$SUPPORT" 2>/dev/null || true
+                rm -f "$PLIST" 2>/dev/null || true
+                rm -rf "$HOME/Library/Caches/com.codeweavers.CrossOver" 2>/dev/null || true
+                [[ -f "$AGENT" ]] && { launchctl unload "$AGENT" 2>/dev/null || true; rm -f "$AGENT"; }
+                log "Cleaned up residual files"
+            fi
+        fi
+        return 0
+    fi
+    
+    # Show what will be removed
+    header "The following will be removed:"
+    echo "  • CrossOver application"
+    echo "  • Preferences and settings"
+    echo "  • Cache files"
+    [[ -f "$AGENT" ]] && echo "  • Auto-reset service"
+    
+    # Check for bottles (installed Windows apps)
+    if [[ -d "$BOTTLES" ]]; then
+        local bottle_count=$(find "$BOTTLES" -maxdepth 1 -type d 2>/dev/null | wc -l)
+        bottle_count=$((bottle_count - 1))
+        if (( bottle_count > 0 )); then
+            echo ""
+            echo -e "  ${Y}⚠ Found $bottle_count installed Windows app(s):${N}"
+            for b in "$BOTTLES"/*/; do
+                [[ -d "$b" ]] && echo "    - $(basename "$b")"
+            done
+        fi
+    fi
+    
+    echo ""
+    if ! confirm "Remove CrossOver completely?"; then
+        warn "Cancelled"
+        return 0
+    fi
+    
+    # Ask about bottles specifically
+    local remove_bottles=true
+    if [[ -d "$BOTTLES" ]]; then
+        echo ""
+        if ! confirm "Also remove all installed Windows apps (bottles)?"; then
+            remove_bottles=false
+        fi
+    fi
+    
+    info "Removing CrossOver..."
+    
+    # Stop processes
+    kill_app
+    
+    # Remove LaunchAgent (current and legacy)
+    for agent in "$AGENT" "$HOME/Library/LaunchAgents/com.crossover.trialreset.plist"; do
+        if [[ -f "$agent" ]]; then
+            launchctl unload "$agent" 2>/dev/null || true
+            rm -f "$agent"
+        fi
+    done
+    
+    # Remove app
+    rm -rf "$app"
+    
+    # Remove support files
+    if [[ "$remove_bottles" == true ]]; then
+        rm -rf "$SUPPORT"
+    else
+        # Keep bottles, remove everything else
+        find "$SUPPORT" -mindepth 1 -maxdepth 1 ! -name "Bottles" -exec rm -rf {} \; 2>/dev/null || true
+    fi
+    
+    # Remove preferences and caches
+    rm -f "$PLIST" 2>/dev/null || true
+    rm -f "$HOME/Library/Preferences/com.codeweavers.CrossOver.wineloader.plist" 2>/dev/null || true
+    rm -rf "$HOME/Library/Caches/com.codeweavers.CrossOver" 2>/dev/null || true
+    rm -rf "$HOME/Library/Saved Application State/com.codeweavers.CrossOver.savedState" 2>/dev/null || true
+    
+    echo ""
+    log "CrossOver has been removed"
+    
+    if [[ "$remove_bottles" == false ]]; then
+        echo ""
+        info "Windows apps preserved at: $BOTTLES"
+        info "Delete manually when ready: rm -rf \"$BOTTLES\""
+    fi
+    
+    echo ""
+}
+
+cmd_help() {
+    echo ""
+    echo -e "${BOLD}CrossOver Manager v$VERSION${N}"
+    echo ""
+    echo -e "${BOLD}USAGE${N}"
+    echo "    bash <(curl -fsSL URL)           Install or update CrossOver"
+    echo "    bash <(curl -fsSL URL) remove    Remove CrossOver completely"
+    echo ""
+    echo -e "${BOLD}DESCRIPTION${N}"
+    echo "    Installs CrossOver with automatic trial reset. The trial resets"
+    echo "    every time you launch the app, giving you unlimited use."
+    echo ""
+    echo -e "${BOLD}OPTIONS${N}"
+    echo "    (none)      Install CrossOver or reset trial if already installed"
+    echo "    remove      Completely remove CrossOver and all associated files"
+    echo "    help        Show this help message"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+
+main() {
+    # Check macOS
+    [[ "$(uname)" != "Darwin" ]] && error "This script only works on macOS"
+    
+    case "${1:-}" in
+        remove|uninstall) cmd_remove ;;
+        help|--help|-h)   cmd_help ;;
+        ""|install)       cmd_install ;;
+        *)                error "Unknown command: $1. Use 'help' for usage." ;;
+    esac
+}
+
+main "$@"
+
