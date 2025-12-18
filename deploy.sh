@@ -15,7 +15,8 @@
 set -euo pipefail
 
 # Colors
-R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' B='\033[0;34m' C='\033[0;36m' N='\033[0m' BOLD='\033[1m'
+# shellcheck disable=SC2034
+R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' C='\033[0;36m' N='\033[0m' BOLD='\033[1m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/.deploy-config"
@@ -31,6 +32,7 @@ info()  { echo -e "${C}→${N} $1"; }
 # ─────────────────────────────────────────────────────────────────────────────
 
 load_config() {
+    # shellcheck source=/dev/null
     [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 }
 
