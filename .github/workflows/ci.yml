@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint & Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: ShellCheck - crossover
+        run: shellcheck -x crossover
+
+      - name: ShellCheck - deploy.sh
+        run: shellcheck -x deploy.sh
+
+      - name: Bash syntax check - crossover
+        run: bash -n crossover
+
+      - name: Bash syntax check - deploy.sh
+        run: bash -n deploy.sh
+
+  test:
+    name: Test Script
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test help command
+        run: |
+          chmod +x crossover
+          ./crossover help
+
+      - name: Test version detection
+        run: |
+          # Test that we can fetch latest version from CodeWeavers
+          latest=$(curl -sfL "https://media.codeweavers.com/pub/crossover/cxmac/demo/?C=M;O=D" | grep -oE 'crossover-[0-9]+\.[0-9]+\.[0-9]+\.zip' | head -1)
+          if [ -z "$latest" ]; then
+            echo "❌ Failed to detect latest version"
+            exit 1
+          fi
+          echo "✅ Latest version: $latest"
+
+      - name: Verify script structure
+        run: |
+          # Check required functions exist
+          for fn in cmd_install cmd_remove find_app reset_trial apply_crack; do
+            if ! grep -q "$fn()" crossover; then
+              echo "❌ Missing function: $fn"
+              exit 1
+            fi
+          done
+          echo "✅ All required functions present"
+
+  deploy:
+    name: Deploy to Cloudflare
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dist
+        run: |
+          mkdir -p dist
+          cp crossover dist/
+          cat > dist/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>CrossOver Manager</title>
+              <style>
+                  *{margin:0;padding:0;box-sizing:border-box}
+                  body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro',sans-serif;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#fff}
+                  .container{max-width:600px;padding:2rem;text-align:center}
+                  h1{font-size:3rem;margin-bottom:.5rem}
+                  .subtitle{color:#888;margin-bottom:2rem}
+                  .code-block{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:1rem;margin:1rem 0;text-align:left;position:relative}
+                  code{font-family:'SF Mono',Monaco,monospace;font-size:.9rem;color:#58a6ff;word-break:break-all}
+                  .label{color:#8b949e;font-size:.75rem;text-transform:uppercase;margin-bottom:.5rem}
+                  .copy-btn{position:absolute;right:.5rem;top:.5rem;background:#21262d;border:1px solid #30363d;color:#8b949e;padding:.25rem .5rem;border-radius:4px;cursor:pointer;font-size:.75rem}
+                  .copy-btn:hover{background:#30363d;color:#fff}
+                  .features{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:2rem;text-align:left}
+                  .feature{background:rgba(255,255,255,.05);padding:1rem;border-radius:8px}
+                  .feature h3{font-size:.9rem;margin-bottom:.25rem}
+                  .feature p{font-size:.8rem;color:#888}
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🍷</h1>
+                  <h1>CrossOver Manager</h1>
+                  <p class="subtitle">Unlimited trial with one command</p>
+                  <div class="code-block">
+                      <div class="label">Install</div>
+                      <code id="install-cmd">bash &lt;(curl -fsSL DEPLOY_URL/crossover)</code>
+                      <button class="copy-btn" onclick="copy('install-cmd')">Copy</button>
+                  </div>
+                  <div class="code-block">
+                      <div class="label">Remove</div>
+                      <code id="remove-cmd">bash &lt;(curl -fsSL DEPLOY_URL/crossover) remove</code>
+                      <button class="copy-btn" onclick="copy('remove-cmd')">Copy</button>
+                  </div>
+                  <div class="features">
+                      <div class="feature"><h3>⚡ One Command</h3><p>Downloads, installs, and cracks automatically</p></div>
+                      <div class="feature"><h3>🔄 Auto Reset</h3><p>Trial resets every time you launch</p></div>
+                      <div class="feature"><h3>📦 Smart Download</h3><p>Detects existing installers</p></div>
+                      <div class="feature"><h3>🧹 Clean Remove</h3><p>Option to keep Windows apps</p></div>
+                  </div>
+              </div>
+              <script>
+                  const url=window.location.origin;
+                  document.querySelectorAll('code').forEach(el=>{el.textContent=el.textContent.replace('DEPLOY_URL',url)});
+                  function copy(id){const text=document.getElementById(id).textContent;navigator.clipboard.writeText(text);event.target.textContent='Copied!';setTimeout(()=>event.target.textContent='Copy',1500)}
+              </script>
+          </body>
+          </html>
+          EOF
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: crossover-trial
+          directory: dist
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+
