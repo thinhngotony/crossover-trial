@@ -27,14 +27,20 @@ The GitHub Actions workflow (`ci.yml`) runs on every push and PR:
 | `test` | Runs on macOS, tests help command and version detection |
 | `deploy` | Auto-deploys to Cloudflare Pages on main branch |
 
-### Required Secrets
+### Required Secrets & Variables
 
 Set these in GitHub repo settings → Secrets and variables → Actions:
 
+**Secrets:**
 | Secret | Description |
 |--------|-------------|
 | `CLOUDFLARE_API_TOKEN` | API token with "Cloudflare Pages: Edit" permission |
 | `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare account ID |
+
+**Variables (optional):**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLOUDFLARE_PROJECT_NAME` | `crossover-trial` | Cloudflare Pages project name |
 
 ### Creating Cloudflare API Token
 

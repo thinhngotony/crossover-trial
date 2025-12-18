@@ -13,7 +13,21 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-readonly VERSION="1.0.0"
+# Version: from git tag, or commit short hash, or "dev"
+get_script_version() {
+    local dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if command -v git &>/dev/null && [[ -d "$dir/.git" ]]; then
+        local tag=$(git -C "$dir" describe --tags --exact-match 2>/dev/null)
+        if [[ -n "$tag" ]]; then
+            echo "$tag"
+        else
+            echo "$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo 'dev')"
+        fi
+    else
+        echo "dev"
+    fi
+}
+readonly VERSION="$(get_script_version)"
 readonly DEMO_URL="https://media.codeweavers.com/pub/crossover/cxmac/demo/"
 readonly APP_PATHS=("/Applications/CrossOver.app" "$HOME/Applications/CrossOver.app")
 readonly PLIST="$HOME/Library/Preferences/com.codeweavers.CrossOver.plist"
